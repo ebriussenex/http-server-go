@@ -39,7 +39,7 @@ func main() {
 			fmt.Println("Failed to read from connection")
 		}
 
-		statusLine := formStatusLine("HTTP v1.1", StatusCode{"OK", 200})
+		statusLine := formStatusLine("HTTP/1.1", StatusCode{"OK", 200})
 		connection.Write([]byte(statusLine))
 	}
 }
