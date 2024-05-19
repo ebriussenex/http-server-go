@@ -2,21 +2,92 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
+
+	"github.com/codecrafters-io/http-server-starter-go/app/request"
+	"github.com/codecrafters-io/http-server-starter-go/app/status"
 )
 
-const (
-	crlf = "\r\n"
-)
+type HTTPHandlerFunc func(net.Conn, []byte) error
 
-type StatusCode struct {
-	text string
-	code uint8
+type Server struct {
+	listener net.Listener
+	handlers map[string]map[string]HTTPHandlerFunc
+}
+
+func (s *Server) registerHandler(httpMethod string, target string, handler HTTPHandlerFunc) {
+	if s.handlers[httpMethod] == nil {
+		s.handlers[httpMethod] = map[string]HTTPHandlerFunc{}
+	}
+
+	s.handlers[httpMethod][target] = handler
+}
+
+func (s *Server) handleNotFound(connection net.Conn) error {
+	if _, err := connection.Write([]byte(status.StatusLine("HTTP/1.1", status.StatusNotFound))); err != nil {
+		return err
+	}
+	connection.Close()
+	return nil
+}
+
+func (s *Server) handle(connection net.Conn, data []byte) error {
+	fmt.Println("handling request")
+
+	request, err := request.ParseRequest(data)
+	if err != nil {
+		return fmt.Errorf("failed to parse request: %w", err)
+	}
+
+	if handler, ok := s.handlers[request.HTTPMethod][request.Target]; ok {
+		return handler(connection, data)
+	}
+
+	if request.HTTPMethod == "GET" || request.HTTPMethod == "" {
+		return s.handleNotFound(connection)
+	}
+
+	if err := connection.Close(); err != nil {
+		return fmt.Errorf("failed to close connection: %w", err)
+	}
+
+	return fmt.Errorf("no handler for %s %s", request.HTTPMethod, request.Target)
+}
+
+func (s *Server) Serve() error {
+	for {
+		var (
+			err    error
+			amount int
+			connection net.Conn
+		)
+
+		data := make([]byte, 1024)
+		if connection, err = s.listener.Accept(); err != nil {
+			return fmt.Errorf("error accepting connection: %w", err)
+		}
+
+		fmt.Println("accepted connection!")
+
+		if amount, err = connection.Read(data); err != nil {
+			return fmt.Errorf("failure while reading from connection: %w", err)
+		}
+
+		fmt.Printf("read from connection: %s, %d\n", string(data), amount)
+
+		if amount > 0 {
+			fmt.Printf("served incoming data: %s, %d\n", string(data), amount)
+
+			if err := s.handle(connection, data); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func main() {
-	fmt.Println("Logs from your program will appear here!")
 
 	l, err := net.Listen("tcp", "0.0.0.0:4221")
 	if err != nil {
@@ -24,26 +95,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	for {
-		connection, err := l.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
-			os.Exit(1)
-		}
+	fmt.Println("server started")
 
-		fmt.Println("accepted connection")
-
-		var result []byte
-
-		if _, err := connection.Read(result); err != nil {
-			fmt.Println("Failed to read from connection")
-		}
-
-		statusLine := formStatusLine("HTTP/1.1", StatusCode{"OK", 200})
-		connection.Write([]byte(statusLine))
+	server := Server{
+		l,
+		map[string]map[string]HTTPHandlerFunc{},
 	}
-}
 
-func formStatusLine(protocolVersion string, statusCode StatusCode) string {
-	return fmt.Sprintf("%s %d %s", protocolVersion, statusCode.code, statusCode.text) + crlf + crlf
+	server.registerHandler("GET", "/", func(connection net.Conn, _ []byte) error {
+		fmt.Println("writing started")
+		connection.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+		connection.Close()
+		return nil
+	})
+
+	if err := server.Serve(); err != nil {
+		log.Println(err.Error())
+	}
+	defer l.Close()
 }
